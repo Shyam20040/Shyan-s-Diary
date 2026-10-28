@@ -30,6 +30,7 @@ export type FocusSession = {
 };
 
 export type ActiveTimer = {
+  id?: string;
   taskId: string | null;
   startedAt: string;
   elapsedSeconds: number;

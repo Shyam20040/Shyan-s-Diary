@@ -76,7 +76,6 @@ export async function POST(request: NextRequest) {
   if (!allowedTypes.has(file.type)) {
     return NextResponse.json({ error: "Allowed files: PDF, PNG, JPEG, WebP, plain text, or Markdown." }, { status: 415 });
   }
-
   const safeName = file.name.normalize("NFKC").replace(/[^\w.-]+/g, "_").slice(-120) || "attachment";
   const id = randomUUID();
   const storagePath = `${parsed.data.relatedType}/${parsed.data.relatedId}/${id}-${safeName}`;
