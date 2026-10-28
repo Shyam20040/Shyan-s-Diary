@@ -8,7 +8,6 @@ import {
   type DailyReportEvidence,
   type DailyReportAnalysis,
 } from "@/lib/ai/daily-report";
-import { isValidOwnerSession, OWNER_SESSION_COOKIE } from "@/lib/security/owner-session";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 
 const manualRequest = z.object({
@@ -444,11 +443,6 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const isLocalDevelopment = process.env.NODE_ENV === "development" && !process.env.APP_ACCESS_PASSWORD;
-  if (!isLocalDevelopment && !isValidOwnerSession(request.cookies.get(OWNER_SESSION_COOKIE)?.value)) {
-    return NextResponse.json({ error: "Owner access is required." }, { status: 401 });
-  }
-
   const body: unknown = await request.json().catch(() => null);
   const parsed = manualRequest.safeParse(body);
   if (!parsed.success) {

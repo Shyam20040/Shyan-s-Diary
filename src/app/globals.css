@@ -407,18 +407,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 .mobile-backdrop { background: rgb(19 24 40 / 40%); border: 0; display: none; inset: 0; position: fixed; z-index: 15; }
 
-.access-page { align-items: center; background: radial-gradient(ellipse at 70% 8%, #e8ecff 0, transparent 38%), var(--page); display: flex; justify-content: center; min-height: 100vh; padding: 24px; }
-:root[data-theme="dark"] .access-page { background: radial-gradient(ellipse at 70% 8%, #252d4a 0, transparent 38%), var(--page); }
-.access-card { background: var(--surface); border: 1px solid var(--line); border-radius: 13px; box-shadow: 0 18px 60px rgb(36 47 78 / 8%); display: flex; flex-direction: column; max-width: 390px; padding: 33px; width: 100%; }
-.access-card .brand-mark { margin-bottom: 30px; }
-.access-icon { align-items: center; background: var(--blue-soft); border-radius: 9px; color: var(--blue); display: flex; height: 38px; justify-content: center; margin-bottom: 16px; width: 38px; }
-.access-card .eyebrow { margin-bottom: 8px; }
-.access-card h1 { color: var(--navy); font-size: 26px; letter-spacing: -.9px; margin: 0; }
-.access-card .muted { font-size: 11px; line-height: 1.65; margin: 9px 0 22px; }
-.access-card input { background: var(--surface); border: 1px solid var(--line-strong); border-radius: 6px; color: var(--ink); min-height: 39px; padding: 0 10px; }
-.wide-button { margin-top: 14px; min-height: 40px; }
-.form-error { color: var(--danger); font-size: 10px; margin: 3px 0 0; }
-.access-card code { background: var(--surface-soft); border-radius: 3px; font-size: .95em; padding: 2px 4px; }
 
 @media (max-width: 1100px) {
   .sidebar { flex-basis: 225px; }
