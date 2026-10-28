@@ -8,9 +8,7 @@ import {
   type DailyReportEvidence,
   type DailyReportAnalysis,
 } from "@/lib/ai/daily-report";
-import { getIstDayBounds, istDateKey, taskBelongsToDay } from "@/lib/dates";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
-import { decodeFocusSessionNotes } from "@/lib/focus-timer";
 
 const manualRequest = z.object({
   date: z.string().date(),
@@ -18,7 +16,14 @@ const manualRequest = z.object({
 });
 
 function reportDateInKolkata(date: Date) {
-  return istDateKey(date);
+  const values = new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+  }).formatToParts(date);
+  const parts = Object.fromEntries(values.map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
 function validJobSecret(request: NextRequest) {
@@ -35,10 +40,11 @@ function validJobSecret(request: NextRequest) {
 }
 
 function localDayBounds(date: string, cutoff: Date) {
-  const { start, end } = getIstDayBounds(date);
+  const startsAt = new Date(`${date}T00:00:00+05:30`);
+  const endsAt = new Date(startsAt.getTime() + 24 * 60 * 60 * 1000);
   return {
-    startsAt: start,
-    endsAt: (cutoff.getTime() < new Date(end).getTime() ? cutoff : new Date(end)).toISOString(),
+    startsAt: startsAt.toISOString(),
+    endsAt: (cutoff.getTime() < endsAt.getTime() ? cutoff : endsAt).toISOString(),
   };
 }
 
@@ -248,16 +254,15 @@ async function generateForDate(date: string, regenerate: boolean) {
         .gte("completed_at", bounds.startsAt)
         .lt("completed_at", bounds.endsAt)
         .limit(500),
-      supabase.from("focus_sessions")
-        .select("id,task_id,started_at,ended_at,duration_seconds,notes")
-        .is("archived_at", null)
+      supabase.from("time_sessions")
+        .select("id,task_id,started_at,ended_at,paused_seconds,duration_seconds,status,session_type")
         .gte("started_at", bounds.startsAt)
         .lt("started_at", bounds.endsAt)
         .order("started_at", { ascending: true })
         .limit(500),
-      supabase.from("journal_entries")
-        .select("content")
-        .eq("entry_date", date)
+      supabase.from("daily_logs")
+        .select("private_notes,accomplished,went_well,challenges,lessons,next_day_priorities")
+        .eq("log_date", date)
         .maybeSingle(),
       supabase.from("daily_reports")
         .select("report_date,metrics")
@@ -276,28 +281,22 @@ async function generateForDate(date: string, regenerate: boolean) {
     for (const task of [...(plannedResult.data ?? []), ...(completedResult.data ?? [])]) {
       taskMap.set(task.id, task);
     }
-    const tasks = [...taskMap.values()].filter((task) => taskBelongsToDay({
-      dueDate: task.due_date,
-      completedAt: task.completed_at,
-    }, date));
+    const tasks = [...taskMap.values()];
     const sessions = sessionsResult.data ?? [];
     const sessionEvidence = sessions.map((session) => {
       const task = tasks.find((item) => item.id === session.task_id);
-      const timerState = decodeFocusSessionNotes(session.notes)?.daymarkTimer;
       const calculatedDuration = session.duration_seconds ??
-        (session.ended_at === null && timerState
-          ? timerState.elapsedSeconds + (timerState.runningSince
-            ? Math.max(0, Math.floor((now.getTime() - new Date(timerState.runningSince).getTime()) / 1000))
-            : 0)
+        (session.status === "running" || session.status === "paused"
+          ? Math.max(0, Math.floor((now.getTime() - new Date(session.started_at).getTime()) / 1000) - session.paused_seconds)
           : 0);
       return {
         taskTitle: task?.title ?? "Unassigned focus",
         durationSeconds: calculatedDuration,
-        sessionType: "focus",
+        sessionType: session.session_type,
       };
     });
-    const planned = tasks.filter((task) => task.status !== "cancelled").length;
-    const completed = tasks.filter((task) => task.status === "completed").length;
+    const planned = (plannedResult.data ?? []).length;
+    const completed = (plannedResult.data ?? []).filter((task) => task.status === "completed").length;
     const focusSeconds = sessionEvidence.reduce((total, session) => total + session.durationSeconds, 0);
     const trackedMinutes = Math.round(focusSeconds / 60);
     const priorReports = historyResult.data ?? [];
@@ -307,13 +306,21 @@ async function generateForDate(date: string, regenerate: boolean) {
     const priorFocusSeconds = priorReports
       .map((report) => (report.metrics as { focusSeconds?: number } | null)?.focusSeconds)
       .filter((seconds): seconds is number => typeof seconds === "number");
-    const journal = (journalResult.data?.content ?? "").slice(0, 6000);
+    const log = journalResult.data;
+    const journal = [
+      log?.accomplished,
+      log?.went_well,
+      log?.challenges,
+      log?.lessons,
+      log?.next_day_priorities,
+      log?.private_notes,
+    ].filter((value): value is string => Boolean(value?.trim())).join("\n\n").slice(0, 6000);
     const metrics = {
       planned,
       completed,
       completionRate: planned ? Math.round((completed / planned) * 100) : null,
       focusSeconds,
-      estimatedMinutes: tasks.reduce((total, task) => total + task.estimate_minutes, 0),
+      estimatedMinutes: (plannedResult.data ?? []).reduce((total, task) => total + task.estimate_minutes, 0),
       trackedMinutes,
       priorReportCount: priorReports.length,
       priorAverageCompletionRate: priorCompletionRates.length
@@ -371,7 +378,7 @@ async function generateForDate(date: string, regenerate: boolean) {
 
     const generatedAt = new Date();
     const pdf = renderReportPdf(evidence, analysis, aiIssue, generatedAt);
-    const storagePath = `${date}/daily-report.pdf`;
+    const storagePath = `reports/${date}/daily-report.pdf`;
     const { error: uploadError } = await supabase.storage
       .from("private-life-files")
       .upload(storagePath, pdf, { contentType: "application/pdf", upsert: true });

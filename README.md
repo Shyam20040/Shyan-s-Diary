@@ -2,19 +2,21 @@
 
 A personal workspace for planning, focus sessions, daily reflection, and evidence-based reporting. The app is built with Next.js App Router, TypeScript, and Supabase.
 
-**This app has no login or access control. Anyone with the deployed URL can access the workspace and its data. It is intentionally designed for personal use.**
+## What works in this first implementation
 
-## What works
-
-- Dashboard metrics, task management, goals, projects, blog drafts, Knowledge attachments, AI Studio, and reports.
-- Cloud-backed tasks, goals, projects, blog drafts, journal entries, and timestamped focus sessions.
-- Focus and journal state load from the database, so the timer remains consistent across devices.
-- Confirmed import of existing browser-local tasks, focus sessions, and journal entries. Import does not delete local data.
-- Private file uploads, signed downloads, and deletion for task, project, and blog attachments.
-- Gemini AI Studio responses grounded in saved workspace records.
+- Responsive dashboard with metrics calculated only from records saved in the workspace.
+- Task creation, editing, completion, search, status filtering, and confirmation-based archiving.
+- Timestamp-based focus timer that survives page refreshes in the same browser.
+- Date-addressable daily journal and activity history.
+- On-demand, locally generated PDF reports and JSON data export.
 - Dark/light appearance preference.
+- Supabase task, goal, project, and blog-draft storage through protected server routes.
+- Private file uploads, signed downloads, and deletion for task, project, and blog attachments.
+- Gemini AI Studio responses grounded in saved tasks, goals, projects, journal reflections, and focus sessions.
+- RLS-enabled schema and private storage buckets.
+- Public site access. Anyone with the deployed URL can use the workspace and its API routes.
 
-Blog status is workspace metadata and does not publish to an external site or automatically publish scheduled posts. AI, reports, and scheduled jobs require the corresponding Gemini, Supabase, and Netlify environment variables.
+Focus sessions and journal entries are browser-local in this release; the AI endpoint uses database records only. Blog status is workspace metadata and does not publish to an external site or automatically publish scheduled posts. Realtime and cross-device timer/journal synchronization are not enabled. The server-side daily report endpoint, private PDF upload, idempotency claim, Gemini evidence analysis, and Vercel Cron schedule require the corresponding Supabase/Gemini/hosting secrets.
 
 ## Local development
 
@@ -23,22 +25,22 @@ Requirements: Node.js 20.9 or newer and npm.
 ```powershell
 npm install
 Copy-Item .env.example .env.local
-npm run dev -- --hostname 127.0.0.1 --port 3035
+npm run dev
 ```
 
-Open `http://127.0.0.1:3035`. Configure the Supabase variables below before using cloud features.
+Keep the development server bound to localhost; do not expose it on a public network. Local records are stored in the browser's local storage and do not leave the device unless you configure Supabase.
 
 ## Supabase setup
 
 1. Create a Supabase project.
-2. Set `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and the required Gemini keys in `.env.local` and in Netlify site environment variables. Keep the service-role key and Gemini keys server-only; never use `NEXT_PUBLIC_*` for them.
-3. Link this repository to the intended Supabase project and apply every migration with `npx supabase@latest db push --linked`. Do not use `db reset` against production.
-4. Create two private Storage buckets named `private-life-files` and `Attachments`.
-5. Deploy the site on Netlify. No Supabase Auth setup or sign-in is required.
+2. Apply `supabase/migrations/20261028000000_initial_schema.sql` using the Supabase CLI (`supabase db push`) or the SQL editor.
+3. Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in `.env.local` or your hosting provider's secret manager.
+4. The service-role key is read only by server code. Do not expose it through `NEXT_PUBLIC_*`.
+5. RLS is enabled on private tables and no browser-role policies are created. Database access is through server routes that use the service-role key; those routes are publicly reachable, so keep the site URL private if you do not want others using it.
 
-Row-level security is enabled on database tables without client policies. Database access goes through server routes using the server-only service-role key. Keep the deployed URL private if you do not want others to access this personal workspace.
+The migration creates the private `private-life-files` bucket for report PDFs. The Knowledge module expects a second **private** bucket named `Attachments`; create it in Supabase Storage if it does not already exist. Attachment uploads are limited to 25 MB and PDF, PNG, JPEG, WebP, plain-text, or Markdown files. Uploads are linked to a saved task, project, or blog post; downloads use short-lived signed URLs.
 
-Attachment uploads are limited to 25 MB and PDF, PNG, JPEG, WebP, plain-text, or Markdown files. Uploads are linked to a saved task, project, or blog post; downloads use short-lived signed URLs.
+The Goals & projects, Blog studio, Knowledge, and AI studio screens require a working Supabase connection. AI Studio reads `GEMINI_API_KEY_AI_STUDIO` or falls back to `GEMINI_API_KEY_DEFAULT` and `GEMINI_API_KEY_DAILY_REPORT`; its model uses `GEMINI_MODEL_AI_STUDIO`, `GEMINI_MODEL_DEFAULT`, then `GEMINI_MODEL_DAILY_REPORT`, with `gemini-2.5-flash` as the default. Keep all keys server-only and restart the development server after editing `.env.local`.
 
 ## Gemini setup
 
@@ -46,17 +48,16 @@ AI Studio and daily report analysis use Gemini on the server. Feature-specific s
 
 ## Daily PDF scheduling
 
-`netlify/functions/daily-report.mts` schedules `GET /api/jobs/daily-report` for `30 16 * * *` UTC (10:00 PM Asia/Kolkata). Set `SCHEDULED_JOB_SECRET` in Netlify site environment variables. The scheduled endpoint requires this secret, uses the server-only service role, is idempotent by reporting date, skips completed reports, and permits recovery after stale processing or failure. PDFs are uploaded to the private `private-life-files` bucket. Netlify scheduled functions run after deployment.
+`vercel.json` schedules `GET /api/jobs/daily-report` for `30 16 * * *` UTC (10:00 PM Asia/Kolkata). The endpoint requires `Authorization: Bearer …` using either `CRON_SECRET` (Vercel's Cron authorization) or `SCHEDULED_JOB_SECRET`. Set one of those secrets in the hosting provider, configure Supabase, and deploy to a Vercel plan that supports Cron. The report claim is unique per reporting date, skips completed reports, and permits recovery after stale processing or failure. PDFs are uploaded to the private `private-life-files` bucket. A local development server cannot run this job while the computer is off.
 
-Manual server report generation is available through `POST /api/jobs/daily-report` with `{"date":"YYYY-MM-DD"}`.
+Manual server report generation is available through `POST /api/jobs/daily-report` with `{"date":"YYYY-MM-DD"}`. It uses Asia/Kolkata day boundaries and returns a short-lived signed download URL. This endpoint is public, like the rest of the app API.
 
 ## Scripts
 
 ```powershell
 npm run dev
 npm run lint
-npx tsc --noEmit
 npm run build
 ```
 
-Data can be downloaded from **Settings → Export your data**. Keep backups private.
+Local-mode data can be downloaded from **Settings → Export your data**. This export includes browser-local tasks, sessions, journal entries, and any active timer state. Keep backups private.

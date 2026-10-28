@@ -41,7 +41,6 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { istDateKey, taskBelongsToDay } from "@/lib/dates";
 import { jsPDF } from "jspdf";
 import {
   FormEvent,
@@ -112,7 +111,15 @@ const todayKey = () => {
 };
 
 function dateKey(value: string | Date) {
-  return istDateKey(value);
+  const date = typeof value === "string" ? new Date(value) : value;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 function durationLabel(seconds: number) {
@@ -131,11 +138,11 @@ function formatDueDate(value: string | null) {
 }
 
 function isTaskToday(task: Task, date: string) {
-  return taskBelongsToDay(task, date);
+  return task.dueDate === date;
 }
 
 function taskRelatesToDate(task: Task, date: string) {
-  return taskBelongsToDay(task, date);
+  return task.dueDate === date || (task.completedAt !== null && dateKey(task.completedAt) === date);
 }
 
 function readLocalData(): LifeData {
@@ -250,8 +257,6 @@ export default function LifeOS() {
   const [cloudMode, setCloudMode] = useState(false);
   const [cloudChecked, setCloudChecked] = useState(false);
   const [cloudError, setCloudError] = useState("");
-  const [localDataAvailable, setLocalDataAvailable] = useState(false);
-  const [importingLocalData, setImportingLocalData] = useState(false);
   const [now, setNow] = useState(new Date(0));
   const [toast, setToast] = useState<Toast | null>(null);
   const [showTaskForm, setShowTaskForm] = useState(false);
@@ -260,7 +265,7 @@ export default function LifeOS() {
   const [taskFilter, setTaskFilter] = useState<"all" | TaskStatus>("all");
   const [selectedDate, setSelectedDate] = useState("");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [darkMode, setDarkMode] = useState(true);
+  const [darkMode, setDarkMode] = useState(false);
   const [themeReady, setThemeReady] = useState(false);
   const [journalDraft, setJournalDraft] = useState("");
   const [journalSaved, setJournalSaved] = useState(false);
@@ -270,9 +275,6 @@ export default function LifeOS() {
   const [newTaskPriority, setNewTaskPriority] = useState<Priority>("medium");
   const [newTaskEstimate, setNewTaskEstimate] = useState(30);
   const [activeTaskId, setActiveTaskId] = useState("");
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [showCommandPalette, setShowCommandPalette] = useState(false);
-  const [commandQuery, setCommandQuery] = useState("");
 
   const flash = useCallback((message: string, tone: Toast["tone"] = "success") => {
     setToast({ message, tone });
@@ -280,55 +282,37 @@ export default function LifeOS() {
   }, []);
 
   useEffect(() => {
+    const localData = readLocalData();
     let active = true;
     const initializeTimer = window.setTimeout(() => {
       if (!active) return;
-      const localData = readLocalData();
-      try {
-        setLocalDataAvailable(
-          window.localStorage.getItem("life-os-import-complete-v1") !== "true" &&
-          (localData.tasks.length > 0 || localData.sessions.length > 0 || Object.keys(localData.journal).length > 0 || localData.activeTimer !== null),
-        );
-      } catch (error) {
-        console.error("Could not check for local workspace data:", error);
-      }
       const currentDate = todayKey();
       setToday(currentDate);
-      setData(EMPTY_LIFE_DATA);
-      setJournalDraft("");
+      setData(localData);
+      setJournalDraft(localData.journal[currentDate] ?? "");
       setSelectedDate(currentDate);
       setNewTaskDueDate(currentDate);
       setNow(new Date());
       setHydrated(true);
-      void (async () => {
-        try {
-          const [taskResponse, personalResponse] = await Promise.all([
-            fetch("/api/tasks", { cache: "no-store" }),
-            fetch("/api/personal-data", { cache: "no-store" }),
-          ]);
-          if (!taskResponse.ok || !personalResponse.ok) throw new Error("Could not load your workspace. Check the database setup and retry.");
-          const taskResult: { tasks: Task[] } = await taskResponse.json();
-          const personalResult: {
-            sessions: FocusSession[];
-            journal: Record<string, string>;
-            activeTimer: LifeData["activeTimer"];
-          } = await personalResponse.json();
-          if (!active) return;
-          setData({
-            tasks: taskResult.tasks,
-            sessions: personalResult.sessions,
-            journal: personalResult.journal,
-            activeTimer: personalResult.activeTimer,
-          });
-          setJournalDraft(personalResult.journal[currentDate] ?? "");
-          setCloudMode(true);
-          setCloudError("");
-        } catch (error: unknown) {
-          if (active) setCloudError(error instanceof Error ? error.message : "Could not connect to your private workspace.");
-        } finally {
+      void fetch("/api/tasks")
+        .then(async (response) => {
+          if (response.status === 503) return;
+          if (!response.ok) throw new Error("Could not connect to your task database.");
+          const result: { tasks: Task[] } = await response.json();
+          if (active) {
+            setData((current) => ({ ...current, tasks: result.tasks }));
+            setCloudMode(true);
+            setCloudError("");
+          }
+        })
+        .catch((error: unknown) => {
+          if (active) {
+            setCloudError(error instanceof Error ? error.message : "Task sync is unavailable.");
+          }
+        })
+        .finally(() => {
           if (active) setCloudChecked(true);
-        }
-      })();
+        });
     }, 0);
 
     return () => {
@@ -343,53 +327,21 @@ export default function LifeOS() {
   }, []);
 
   useEffect(() => {
-    if (!cloudMode) return;
-    let active = true;
-    const reload = async () => {
-      try {
-        const [taskResponse, personalResponse] = await Promise.all([
-          fetch("/api/tasks", { cache: "no-store" }),
-          fetch("/api/personal-data", { cache: "no-store" }),
-        ]);
-        if (!taskResponse.ok || !personalResponse.ok) throw new Error("Workspace refresh failed.");
-        const taskResult: { tasks: Task[] } = await taskResponse.json();
-        const personalResult: {
-          sessions: FocusSession[];
-          journal: Record<string, string>;
-          activeTimer: LifeData["activeTimer"];
-        } = await personalResponse.json();
-        if (!active) return;
-        setData({
-          tasks: taskResult.tasks,
-          sessions: personalResult.sessions,
-          journal: personalResult.journal,
-          activeTimer: personalResult.activeTimer,
-        });
-        setJournalDraft((current) => current === "" ? personalResult.journal[selectedDate] ?? "" : current);
-      } catch (error) {
-        if (active) console.error("Could not refresh realtime workspace data:", error);
-      }
-    };
-
-    const reloadWhenVisible = () => {
-      if (document.visibilityState === "visible") void reload();
-    };
-    const interval = window.setInterval(reloadWhenVisible, 20_000);
-    window.addEventListener("focus", reloadWhenVisible);
-    document.addEventListener("visibilitychange", reloadWhenVisible);
-
-    return () => {
-      active = false;
-      window.clearInterval(interval);
-      window.removeEventListener("focus", reloadWhenVisible);
-      document.removeEventListener("visibilitychange", reloadWhenVisible);
-    };
-  }, [cloudMode, selectedDate]);
+    if (!hydrated) return;
+    try {
+      const localData = cloudMode ? { ...data, tasks: readLocalData().tasks } : data;
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(localData));
+    } catch (error) {
+      console.error("Could not save local workspace data:", error);
+      window.setTimeout(() => {
+        setToast({ message: "Local storage is unavailable. Your latest change may not persist.", tone: "error" });
+      }, 0);
+    }
+  }, [data, hydrated, cloudMode]);
 
   useEffect(() => {
     if (
       !hydrated ||
-      !cloudMode ||
       !selectedDate ||
       (data.journal[selectedDate] ?? "") === journalDraft
     ) {
@@ -397,30 +349,18 @@ export default function LifeOS() {
     }
 
     const timeout = window.setTimeout(() => {
-      void fetch("/api/journal", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ date: selectedDate, body: journalDraft }),
-      }).then(async (response) => {
-        if (!response.ok) {
-          const result: { error?: string } = await response.json().catch(() => ({}));
-          throw new Error(result.error ?? "Could not save journal entry.");
-        }
-      }).catch((error: unknown) => {
-        flash(error instanceof Error ? error.message : "Could not save journal entry.", "error");
-      });
       setData((current) => ({
         ...current,
         journal: { ...current.journal, [selectedDate]: journalDraft },
       }));
     }, 700);
     return () => window.clearTimeout(timeout);
-  }, [cloudMode, data.journal, flash, hydrated, journalDraft, selectedDate]);
+  }, [data.journal, hydrated, journalDraft, selectedDate]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
       try {
-        setDarkMode(window.localStorage.getItem("life-os-theme") !== "light");
+        setDarkMode(window.localStorage.getItem("life-os-theme") === "dark");
       } catch (error) {
         console.error("Could not read theme preference:", error);
       } finally {
@@ -476,7 +416,7 @@ export default function LifeOS() {
 
   const editingTask = data.tasks.find((task) => task.id === editingTaskId);
 
-  const openNewTask = useCallback(() => {
+  function openNewTask() {
     setEditingTaskId(null);
     setNewTaskTitle("");
     setNewTaskDescription("");
@@ -484,32 +424,7 @@ export default function LifeOS() {
     setNewTaskPriority("medium");
     setNewTaskEstimate(30);
     setShowTaskForm(true);
-  }, [today]);
-
-  useEffect(() => {
-    const handleShortcuts = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        setShowCommandPalette(true);
-        return;
-      }
-      if (event.key === "Escape") {
-        setShowCommandPalette(false);
-        return;
-      }
-      const target = event.target;
-      if (
-        event.key.toLowerCase() === "n" &&
-        !event.ctrlKey && !event.metaKey && !event.altKey &&
-        !(target instanceof HTMLElement && (target.isContentEditable || target.matches("input, textarea, select")))
-      ) {
-        event.preventDefault();
-        openNewTask();
-      }
-    };
-    window.addEventListener("keydown", handleShortcuts);
-    return () => window.removeEventListener("keydown", handleShortcuts);
-  }, [openNewTask]);
+  }
 
   function openEditTask(task: Task) {
     setEditingTaskId(task.id);
@@ -523,10 +438,6 @@ export default function LifeOS() {
 
   async function saveTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!cloudMode) {
-      flash("Your private workspace is unavailable. Retry the connection before saving.", "error");
-      return;
-    }
     const title = newTaskTitle.trim();
     if (!title) return;
 
@@ -594,10 +505,6 @@ export default function LifeOS() {
   }
 
   async function changeTaskStatus(task: Task, status: TaskStatus) {
-    if (!cloudMode) {
-      flash("Your private workspace is unavailable. Retry the connection before updating tasks.", "error");
-      return;
-    }
     const updated: Task = {
       ...task,
       status,
@@ -625,10 +532,6 @@ export default function LifeOS() {
   }
 
   async function archiveTask(task: Task) {
-    if (!cloudMode) {
-      flash("Your private workspace is unavailable. Retry the connection before archiving tasks.", "error");
-      return;
-    }
     if (!window.confirm(`Archive “${task.title}”? It will be removed from active views.`)) return;
     if (cloudMode) {
       try {
@@ -649,36 +552,29 @@ export default function LifeOS() {
     flash("Task archived.");
   }
 
-  const startTimer = useCallback(async (task?: Task) => {
+  const startTimer = useCallback((task?: Task) => {
     if (data.activeTimer) {
       flash("A focus session is already running. Stop it before starting another.", "error");
       setSection("focus");
       return;
     }
-    if (!cloudMode) {
-      flash("Your private workspace is unavailable. Retry the connection before starting focus.", "error");
-      return;
-    }
-    try {
-      const response = await fetch("/api/focus-sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ taskId: task?.id ?? (activeTaskId || null) }),
-      });
-      const result: { activeTimer?: LifeData["activeTimer"]; error?: string } = await response.json();
-      if (!response.ok || !result.activeTimer) throw new Error(result.error ?? "Could not start the focus session.");
-      setData((current) => ({ ...current, activeTimer: result.activeTimer ?? null }));
-    } catch (error) {
-      flash(error instanceof Error ? error.message : "Could not start the focus session.", "error");
-      return;
-    }
+    const startedAt = new Date().toISOString();
+    setData((current) => ({
+      ...current,
+      activeTimer: {
+        taskId: task?.id ?? (activeTaskId || null),
+        startedAt,
+        elapsedSeconds: 0,
+        runningSince: startedAt,
+      },
+    }));
     setSection("focus");
     flash("Focus session started.");
-  }, [activeTaskId, cloudMode, data.activeTimer, flash]);
+  }, [activeTaskId, data.activeTimer, flash]);
 
-  async function stopTimer() {
+  function stopTimer() {
     const timer = data.activeTimer;
-    if (!timer || !timer.id) return;
+    if (!timer) return;
     const durationSeconds = timer.elapsedSeconds + (
       timer.runningSince
         ? Math.max(0, Math.floor((Date.now() - new Date(timer.runningSince).getTime()) / 1000))
@@ -686,99 +582,63 @@ export default function LifeOS() {
           ? 0
           : Math.max(0, Math.floor((Date.now() - new Date(timer.startedAt).getTime()) / 1000))
     );
-    try {
-      const response = await fetch(`/api/focus-sessions/${timer.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "stop" }),
-      });
-      const result: { session?: FocusSession | null; error?: string } = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not stop the focus session.");
-      setData((current) => ({
-        ...current,
-        sessions: result.session ? [result.session, ...current.sessions] : current.sessions,
-        activeTimer: null,
-      }));
-    } catch (error) {
-      flash(error instanceof Error ? error.message : "Could not stop the focus session.", "error");
+    if (durationSeconds < 1) {
+      setData((current) => ({ ...current, activeTimer: null }));
       return;
     }
-    if (durationSeconds < 1) return;
+    const session: FocusSession = {
+      id: crypto.randomUUID(),
+      taskId: timer.taskId,
+      startedAt: timer.startedAt,
+      endedAt: new Date().toISOString(),
+      durationSeconds,
+    };
+    setData((current) => ({
+      ...current,
+      sessions: [session, ...current.sessions],
+      activeTimer: null,
+    }));
     flash(`Focus session saved · ${durationLabel(durationSeconds)}.`);
   }
 
-  async function pauseTimer() {
+  function pauseTimer() {
     const timer = data.activeTimer;
-    if (!timer?.id || timer.runningSince === null) return;
+    if (!timer || timer.runningSince === null) return;
     const elapsedSinceResume = Math.max(
       0,
       Math.floor((Date.now() - new Date(timer.runningSince ?? timer.startedAt).getTime()) / 1000),
     );
-    try {
-      const response = await fetch(`/api/focus-sessions/${timer.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "pause" }),
-      });
-      const result: { elapsedSeconds?: number; error?: string } = await response.json();
-      if (!response.ok || result.elapsedSeconds === undefined) throw new Error(result.error ?? "Could not pause the focus session.");
-      setData((current) => current.activeTimer ? {
-        ...current,
-        activeTimer: { ...current.activeTimer, elapsedSeconds: result.elapsedSeconds ?? 0, runningSince: null },
-      } : current);
-    } catch (error) {
-      flash(error instanceof Error ? error.message : "Could not pause the focus session.", "error");
-      return;
-    }
+    setData((current) => current.activeTimer ? {
+      ...current,
+      activeTimer: {
+        ...current.activeTimer,
+        elapsedSeconds: current.activeTimer.elapsedSeconds + elapsedSinceResume,
+        runningSince: null,
+      },
+    } : current);
     flash(`Focus paused at ${durationLabel(timer.elapsedSeconds + elapsedSinceResume)}.`);
   }
 
-  async function resumeTimer() {
-    const timer = data.activeTimer;
-    if (!timer?.id || timer.runningSince !== null) return;
-    try {
-      const response = await fetch(`/api/focus-sessions/${timer.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "resume" }),
-      });
-      const result: { runningSince?: string; error?: string } = await response.json();
-      if (!response.ok || !result.runningSince) throw new Error(result.error ?? "Could not resume the focus session.");
-      setData((current) => current.activeTimer ? {
-        ...current,
-        activeTimer: { ...current.activeTimer, runningSince: result.runningSince },
-      } : current);
-    } catch (error) {
-      flash(error instanceof Error ? error.message : "Could not resume the focus session.", "error");
-      return;
-    }
+  function resumeTimer() {
+    if (!data.activeTimer || data.activeTimer.runningSince !== null) return;
+    setData((current) => current.activeTimer ? {
+      ...current,
+      activeTimer: { ...current.activeTimer, runningSince: new Date().toISOString() },
+    } : current);
     flash("Focus session resumed.");
   }
 
-  async function saveJournal() {
-    try {
-      const response = await fetch("/api/journal", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ date: selectedDate, body: journalDraft }),
-      });
-      const result: { error?: string } = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not save your journal entry.");
-      setData((current) => ({ ...current, journal: { ...current.journal, [selectedDate]: journalDraft } }));
-      setJournalSaved(true);
-      window.setTimeout(() => setJournalSaved(false), 2000);
-    } catch (error) {
-      flash(error instanceof Error ? error.message : "Could not save your journal entry.", "error");
-    }
+  function saveJournal() {
+    setData((current) => ({
+      ...current,
+      journal: { ...current.journal, [selectedDate]: journalDraft },
+    }));
+    setJournalSaved(true);
+    window.setTimeout(() => setJournalSaved(false), 2000);
   }
 
   function changeSelectedDate(date: string) {
     if (selectedDate && (data.journal[selectedDate] ?? "") !== journalDraft) {
-      void fetch("/api/journal", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ date: selectedDate, body: journalDraft }),
-      }).catch((error: unknown) => console.error("Could not persist the previous journal date:", error));
       setData((current) => ({
         ...current,
         journal: { ...current.journal, [selectedDate]: journalDraft },
@@ -792,51 +652,6 @@ export default function LifeOS() {
   function changeJournalDraft(text: string) {
     setJournalDraft(text);
     setJournalSaved(false);
-  }
-
-  async function importLocalData() {
-    if (!localDataAvailable || importingLocalData) return;
-    const localData = readLocalData();
-    const total = localData.tasks.length + localData.sessions.length + Object.keys(localData.journal).length;
-    const activeTimerMessage = localData.activeTimer ? " and one active timer" : "";
-    if (!window.confirm(`Import up to ${total} local tasks, focus sessions, and journal entries${activeTimerMessage} into your private Supabase account? Existing cloud records will not be overwritten.`)) return;
-    setImportingLocalData(true);
-    try {
-      const response = await fetch("/api/personal-data", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tasks: localData.tasks,
-          sessions: localData.sessions,
-          journal: localData.journal,
-          activeTimer: localData.activeTimer,
-        }),
-      });
-      const result: { imported?: { tasks: number; sessions: number; journalEntries: number; activeTimer: boolean }; error?: string } = await response.json();
-      if (!response.ok || !result.imported) throw new Error(result.error ?? "Could not import local workspace data.");
-      window.localStorage.setItem("life-os-import-complete-v1", "true");
-      setLocalDataAvailable(false);
-      const [taskResponse, personalResponse] = await Promise.all([fetch("/api/tasks"), fetch("/api/personal-data")]);
-      if (!taskResponse.ok || !personalResponse.ok) throw new Error("Data was imported, but the workspace could not refresh. Reload to see the imported records.");
-      const taskResult: { tasks: Task[] } = await taskResponse.json();
-      const personalResult: {
-        sessions: FocusSession[];
-        journal: Record<string, string>;
-        activeTimer: LifeData["activeTimer"];
-      } = await personalResponse.json();
-      setData({
-        tasks: taskResult.tasks,
-        sessions: personalResult.sessions,
-        journal: personalResult.journal,
-        activeTimer: personalResult.activeTimer,
-      });
-      setJournalDraft(personalResult.journal[selectedDate] ?? "");
-      flash(`Imported ${result.imported.tasks} tasks, ${result.imported.sessions} focus sessions, and ${result.imported.journalEntries} journal entries${result.imported.activeTimer ? ", including the active timer" : ""}.`);
-    } catch (error) {
-      flash(error instanceof Error ? error.message : "Could not import local workspace data.", "error");
-    } finally {
-      setImportingLocalData(false);
-    }
   }
 
   async function downloadReport() {
@@ -1029,15 +844,14 @@ export default function LifeOS() {
           {cloudError && (
             <div className="notice notice-warning">
               <CircleHelp size={17} />
-              <span>{cloudError}</span>
+              <span>{cloudError} Your saved local tasks remain available.</span>
               <button aria-label="Dismiss message" className="notice-close" onClick={() => setCloudError("")} type="button"><X size={15} /></button>
             </div>
           )}
           {cloudChecked && !cloudMode && (
             <div className="notice notice-info">
               <ShieldCheck size={17} />
-              <span>Your private workspace could not be loaded. {cloudError || "Check the connection and try again."}</span>
-              <button className="secondary-button" onClick={() => window.location.reload()} type="button">Retry</button>
+              <span>Local mode · Tasks, focus sessions, and journal entries are stored in this browser. Configure Supabase to enable private database syncing.</span>
             </div>
           )}
 
@@ -1139,13 +953,7 @@ export default function LifeOS() {
             />
           )}
           {section === "settings" && (
-            <SettingsPage
-              cloudMode={cloudMode}
-              importingLocalData={importingLocalData}
-              localDataAvailable={localDataAvailable}
-              onExport={exportData}
-              onImportLocalData={() => void importLocalData()}
-            />
+            <SettingsPage cloudMode={cloudMode} onExport={exportData} />
           )}
         </div>
       </main>
@@ -1352,7 +1160,7 @@ function FocusPage({
           <p className="focus-task-display">{activeTask?.title ?? "Choose a task, or focus freely"}</p>
           {!data.activeTimer && <select aria-label="Associate focus with a task" className="focus-task-select" onChange={(event) => onSelectTask(event.target.value)} value={selectedTaskId}><option value="">Focus without a task</option>{data.tasks.filter((task) => task.status !== "completed").map((task) => <option key={task.id} value={task.id}>{task.title}</option>)}</select>}
           {data.activeTimer ? <div className="timer-actions">{activeTimerPaused ? <button className="secondary-button" onClick={onResume} type="button"><Play size={14} /> Resume</button> : <button className="secondary-button" onClick={onPause} type="button"><Pause size={14} /> Pause</button>}<button className="stop-button large-stop" onClick={onStop} type="button"><span className="stop-square" /> Stop and save</button></div> : <button className="primary-button focus-start-button" onClick={() => onStart()} type="button"><Timer size={17} /> Start focus session</button>}
-          <p className="timer-note"><ShieldCheck size={14} /> Your timestamp-based timer syncs across your devices.</p>
+          <p className="timer-note"><ShieldCheck size={14} /> Timer state is saved on this device. Configure Supabase to sync sessions across devices.</p>
         </div>
         <div className="surface-card session-history">
           <div className="card-heading"><div><p className="eyebrow">YOUR RECORD</p><h2>Recent sessions</h2></div><span className="session-total">{durationLabel(sessionTotal)} total</span></div>
@@ -1376,13 +1184,13 @@ function JournalPage({ date, onDateChange, onSave, onTextChange, saved, text }: 
 }) {
   return (
     <section className="section-page journal-page">
-      <PageHeading eyebrow="A SPACE TO REFLECT" title="Daily journal" subtitle="Your entries are saved to Supabase and sync across your devices." action={<input aria-label="Journal date" className="date-input" onChange={(event) => onDateChange(event.target.value)} type="date" value={date} />} />
+      <PageHeading eyebrow="A PRIVATE SPACE TO REFLECT" title="Daily journal" subtitle="Your words are yours. Entries stay on this device unless you configure your private database." action={<input aria-label="Journal date" className="date-input" onChange={(event) => onDateChange(event.target.value)} type="date" value={date} />} />
       <div className="journal-editor surface-card">
         <div className="journal-prompt"><BookOpen size={18} /><div><b>Take a moment for yourself.</b><span>What felt meaningful today? What might you carry into tomorrow?</span></div></div>
         <textarea aria-label="Journal entry" onChange={(event) => onTextChange(event.target.value)} placeholder={"A few honest words are enough…\n\nWhat went well?\nWhat felt difficult?\nWhat do you want to remember?"} value={text} />
-        <div className="journal-editor-footer"><span>{text.trim() ? `${text.trim().split(/\s+/).length} words` : "A note for your future self"}</span><button className="primary-button" disabled={!text.trim()} onClick={onSave} type="button">{saved ? <Check size={16} /> : <BookOpen size={16} />}{saved ? "Saved" : "Save reflection"}</button></div>
+        <div className="journal-editor-footer"><span>{text.trim() ? `${text.trim().split(/\s+/).length} words` : "Only you can see this entry"}</span><button className="primary-button" disabled={!text.trim()} onClick={onSave} type="button">{saved ? <Check size={16} /> : <BookOpen size={16} />}{saved ? "Saved" : "Save reflection"}</button></div>
       </div>
-      <div className="privacy-note"><LockKeyhole size={15} /><span>Personal workspace. Anyone with the app URL can access these records.</span></div>
+      <div className="privacy-note"><LockKeyhole size={15} /><span>Private by default. In local mode, journal entries remain in this browser’s storage and are not sent to any external service.</span></div>
     </section>
   );
 }
@@ -1432,29 +1240,17 @@ function ReportsPage({ cloudMode, data, date, onDateChange, onDownload }: {
   );
 }
 
-function SettingsPage({
-  cloudMode,
-  importingLocalData,
-  localDataAvailable,
-  onExport,
-  onImportLocalData,
-}: {
-  cloudMode: boolean;
-  importingLocalData: boolean;
-  localDataAvailable: boolean;
-  onExport: () => void;
-  onImportLocalData: () => void;
-}) {
+function SettingsPage({ cloudMode, onExport }: { cloudMode: boolean; onExport: () => void }) {
   return (
     <section className="section-page">
       <PageHeading eyebrow="MAKE THIS SPACE YOURS" title="Settings" subtitle="Privacy, preferences, and the connections behind your workspace." />
       <div className="settings-stack">
-        <div className="surface-card settings-card"><div className="settings-icon"><ShieldCheck size={18} /></div><div className="settings-copy"><h2>Personal workspace</h2><p>This app has no login or access control. Anyone with the deployed URL can access its data; keep the URL private for personal use.</p><span className="settings-value">No login · personal use</span></div></div>
-        <div className="surface-card settings-card"><div className="settings-icon"><FolderKanban size={18} /></div><div className="settings-copy"><h2>Data storage</h2><p>{cloudMode ? "Tasks, journal entries, and timestamped focus sessions are stored in Supabase and sync across your devices." : "The Supabase database is not currently connected."}</p><span className="settings-value">{cloudMode ? "Supabase · cloud database" : "Connection unavailable"}</span></div><span className="settings-badge">{cloudMode ? "CONNECTED" : "OFFLINE"}</span></div>
-        {localDataAvailable && <div className="surface-card settings-card"><div className="settings-icon"><Download size={18} /></div><div className="settings-copy"><h2>Import my local data</h2><p>After confirmation, copy this browser’s tasks, focus sessions, and journal entries to Supabase. Existing cloud rows are never overwritten, and local data remains on this device.</p></div><button className="secondary-button" disabled={!cloudMode || importingLocalData} onClick={onImportLocalData} type="button">{importingLocalData ? "Importing…" : "Import my local data"}</button></div>}
-        <div className="surface-card settings-card"><div className="settings-icon"><AlarmClock size={18} /></div><div className="settings-copy"><h2>Daily report schedule</h2><p>Daily reports are scheduled by Netlify for 10:00 PM Asia/Kolkata.</p><span className="settings-value">Asia/Kolkata · 22:00</span></div><span className="settings-badge">NETLIFY</span></div>
-        <div className="surface-card settings-card"><div className="settings-icon"><Download size={18} /></div><div className="settings-copy"><h2>Export your data</h2><p>Download a JSON backup of the currently loaded tasks, cloud focus sessions, journal entries, and active timer state.</p></div><button className="secondary-button" onClick={onExport} type="button"><Download size={15} /> Export JSON</button></div>
+        <div className="surface-card settings-card"><div className="settings-icon"><ShieldCheck size={18} /></div><div className="settings-copy"><h2>Privacy & access</h2><p>Database credentials stay on the server. Anyone with the site URL can use this workspace.</p><span className="settings-value">Public site access</span></div><span className="settings-badge">PUBLIC</span></div>
+        <div className="surface-card settings-card"><div className="settings-icon"><FolderKanban size={18} /></div><div className="settings-copy"><h2>Data storage</h2><p>{cloudMode ? "Tasks are connected to your private Supabase database. Journal and focus entries remain device-local in this release." : "Local mode stores task, timer, and journal records in this browser only."}</p><span className="settings-value">{cloudMode ? "Supabase · tasks connected" : "This device · local storage"}</span></div><span className="settings-badge">{cloudMode ? "CONNECTED" : "LOCAL"}</span></div>
+        <div className="surface-card settings-card"><div className="settings-icon"><AlarmClock size={18} /></div><div className="settings-copy"><h2>Daily report schedule</h2><p>Production scheduling is designed for 10:00 PM Asia/Kolkata and must run from a hosted scheduler, not a browser tab.</p><span className="settings-value">Asia/Kolkata · 22:00</span></div><span className="settings-badge">NOT CONFIGURED</span></div>
+        <div className="surface-card settings-card"><div className="settings-icon"><Download size={18} /></div><div className="settings-copy"><h2>Export your data</h2><p>Download a JSON backup of this browser’s saved tasks, focus sessions, journal entries, and timer state.</p></div><button className="secondary-button" onClick={onExport} type="button"><Download size={15} /> Export JSON</button></div>
       </div>
+      <div className="settings-footnote"><CircleHelp size={15} /><span>Configure Supabase and Gemini credentials in your server environment. See the project README for setup steps.</span></div>
     </section>
   );
 }

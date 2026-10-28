@@ -57,6 +57,7 @@ export async function POST(request: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid task." }, { status: 400 });
   }
+
   const { data, error } = await supabase
     .from("tasks")
     .insert({
