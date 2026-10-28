@@ -100,7 +100,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .insight-title { color: var(--ink); font-size: 11px; font-weight: 700; margin: 11px 0 4px; }
 .insight-copy { color: var(--muted); font-size: 10px; line-height: 1.55; margin: 0; }
 .profile-chip { align-items: center; border-top: 1px solid var(--line); display: flex; gap: 9px; margin-top: 15px; padding: 16px 3px 1px; }
-.avatar, .top-avatar { align-items: center; background: linear-gradient(145deg, #f2d8bb, #eac5a5); border: 2px solid var(--surface); border-radius: 50%; color: #805c50; display: flex; font-size: 11px; font-weight: 700; height: 33px; justify-content: center; width: 33px; }
+.avatar, .top-avatar { align-items: center; background: linear-gradient(145deg, #f2d8bb, #eac5a5); border: 2px solid var(--surface); border-radius: 50%; color: #805c50; display: flex; font-size: 11px; font-weight: 700; height: 33px; justify-content: center; overflow: hidden; position: relative; width: 33px; }
+.avatar img, .top-avatar img { height: 100%; inset: 0; object-fit: cover; position: absolute; width: 100%; }
 .profile-copy { display: flex; flex-direction: column; gap: 3px; }
 .profile-copy b { font-size: 10px; font-weight: 650; }
 .profile-copy span { color: var(--muted); font-size: 9px; }

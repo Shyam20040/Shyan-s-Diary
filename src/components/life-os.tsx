@@ -814,8 +814,8 @@ export default function LifeOS() {
             <span>Settings</span>
           </button>
           <div className="profile-chip">
-            <div className="avatar">S</div>
-            <div className="profile-copy"><b>My workspace</b><span>Private · single owner</span></div>
+            <div className="avatar"><span>S</span><img alt="Profile" onError={(event) => { event.currentTarget.style.display = "none"; }} src="/assets/profile.png" /></div>
+            <div className="profile-copy"><b>My workspace</b><span>Personal workspace</span></div>
             <MoreHorizontal size={18} className="profile-more" />
           </div>
         </div>
@@ -836,7 +836,7 @@ export default function LifeOS() {
               {darkMode ? <Sun size={18} /> : <Moon size={18} />}
             </button>
             <button className="icon-button" aria-label="Notifications" onClick={() => flash("You’re all caught up.")} type="button"><Bell size={18} /></button>
-            <div className="top-avatar">S</div>
+            <div className="top-avatar"><span>S</span><img alt="Profile" onError={(event) => { event.currentTarget.style.display = "none"; }} src="/assets/profile.png" /></div>
           </div>
         </header>
 
